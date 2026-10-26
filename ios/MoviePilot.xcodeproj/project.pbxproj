@@ -500,7 +500,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = org.moviepilot.app;
+				PRODUCT_BUNDLE_IDENTIFIER = com.taresky.moviepilot;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -518,7 +518,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = org.moviepilot.app;
+				PRODUCT_BUNDLE_IDENTIFIER = com.taresky.moviepilot;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -534,7 +534,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = org.moviepilot.app.uitests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.taresky.moviepilot.uitests;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_TARGET_NAME = MoviePilot;
@@ -553,7 +553,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = org.moviepilot.app.widgets;
+				PRODUCT_BUNDLE_IDENTIFIER = com.taresky.moviepilot.widgets;
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -639,7 +639,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = org.moviepilot.app.uitests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.taresky.moviepilot.uitests;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_TARGET_NAME = MoviePilot;
@@ -658,7 +658,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = org.moviepilot.app.widgets;
+				PRODUCT_BUNDLE_IDENTIFIER = com.taresky.moviepilot.widgets;
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
 				TARGETED_DEVICE_FAMILY = "1,2";

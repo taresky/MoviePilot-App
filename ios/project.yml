@@ -30,7 +30,7 @@ targets:
         embed: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: org.moviepilot.app
+        PRODUCT_BUNDLE_IDENTIFIER: com.taresky.moviepilot
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_FILE: MoviePilot/Resources/Info.plist
         GENERATE_INFOPLIST_FILE: false
@@ -50,7 +50,7 @@ targets:
     scheme: {}
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: org.moviepilot.app.widgets
+        PRODUCT_BUNDLE_IDENTIFIER: com.taresky.moviepilot.widgets
         INFOPLIST_FILE: MoviePilotWidgets/Info.plist
         GENERATE_INFOPLIST_FILE: false
         CODE_SIGN_ENTITLEMENTS: MoviePilotWidgets/Widgets.entitlements
@@ -65,5 +65,5 @@ targets:
       - target: MoviePilot
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: org.moviepilot.app.uitests
+        PRODUCT_BUNDLE_IDENTIFIER: com.taresky.moviepilot.uitests
         GENERATE_INFOPLIST_FILE: true
