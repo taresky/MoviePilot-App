@@ -27,6 +27,18 @@ public enum ConnectionFailure: Error, Equatable, LocalizedError, Sendable {
     }
   }
 
+  /// 仅对只读服务探测重试暂时性网络故障；证书、地址、取消及未知错误仍交给用户处理。
+  public static func shouldRetryServiceProbe(_ error: Error) -> Bool {
+    let error = error as NSError
+    guard error.domain == NSURLErrorDomain else { return false }
+    switch URLError.Code(rawValue: error.code) {
+    case .cannotConnectToHost, .networkConnectionLost, .notConnectedToInternet,
+      .internationalRoamingOff, .dataNotAllowed, .timedOut, .cannotFindHost, .dnsLookupFailed:
+      return true
+    default: return false
+    }
+  }
+
   /// 取消无需提示；其他错误只给出用户可处理的原因，不推断局域网权限已经被拒绝。
   public var errorDescription: String? {
     switch self {
@@ -38,7 +50,7 @@ public enum ConnectionFailure: Error, Equatable, LocalizedError, Sendable {
     case .certificate: "服务器的 HTTPS 证书未受系统信任或已失效。请修复证书后重试。"
     case .secureConnection: "无法建立安全的 HTTPS 连接，请检查服务器的 TLS 配置。"
     case .clientCertificate: "此实例要求客户端证书，请使用网页登录。"
-    case .transportSecurity: "系统阻止了不安全连接，请使用 HTTPS 或受支持的局域网地址。"
+    case .transportSecurity: "系统阻止了此连接，请检查服务地址及设备的网络访问限制。"
     case .unavailable: "无法连接服务，请检查地址、端口和服务状态后重试。"
     }
   }
