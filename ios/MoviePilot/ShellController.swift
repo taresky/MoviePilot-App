@@ -9,6 +9,12 @@ private final class NativeMenuButton: UIButton {
   private var presentingMenu = false
   var onMenuClose: (() -> Void)?
 
+  /// 导航栏按控件的固有尺寸量测，不能按省略号图形高度压缩圆形背景。
+  override var intrinsicContentSize: CGSize { CGSize(width: 44, height: 44) }
+
+  /// UIKit 的手动适配路径与 Auto Layout 使用相同的圆形按钮尺寸。
+  override func sizeThatFits(_ size: CGSize) -> CGSize { intrinsicContentSize }
+
   /// UIKit 已展示的二级菜单不能被新的 menu 属性赋值打断，业务选择仍会复核最新快照。
   func apply(menu: UIMenu) {
     if presentingMenu || isHeld {
@@ -93,6 +99,7 @@ final class ShellController: UIViewController, UIPopoverPresentationControllerDe
   private var edgeBackTimeout: Timer?
   private var previewCapture: DispatchWorkItem?
   private let moreMenu = MoreMenuController()
+  private var searchPage: SearchPageController?
   private let bottomNavigation = BottomNavigationView()
   private var panelNavigation: UINavigationController?
   private var panelImages: NativePanelImageLoader?
@@ -149,6 +156,11 @@ final class ShellController: UIViewController, UIPopoverPresentationControllerDe
   override func viewDidLoad() {
     super.viewDidLoad()
     view.backgroundColor = .systemBackground
+    registerForTraitChanges([UITraitUserInterfaceStyle.self]) {
+      (controller: ShellController, _: UITraitCollection) in
+      controller.synchronizeContentBackground()
+      controller.setNeedsStatusBarAppearanceUpdate()
+    }
     installBackGesture(on: view)
     prepareDocumentHost()
   }
@@ -349,6 +361,7 @@ final class ShellController: UIViewController, UIPopoverPresentationControllerDe
     bottomNavigation.isHidden = true
     compatibilityHost.additionalSafeAreaInsets.bottom = 0
     removeMoreMenu()
+    removeSearchPage(resetState: true)
     coordinator.content.view.isHidden = false
     latest = nil
     recoveryView?.removeFromSuperview()
@@ -393,7 +406,8 @@ final class ShellController: UIViewController, UIPopoverPresentationControllerDe
     recoveryView = nil
     let host = selectedHost
     host.edgesForExtendedLayout = .all
-    if webSheet == nil { host.attach(coordinator.content) }
+    // 归还期间网页已离开 Sheet，后续路由仍须跟随当前入口；留在离屏旧宿主会阻塞绘制确认。
+    if webSheet == nil || sheetDismissing { host.attach(coordinator.content) }
     configureMoreMenu(host, snapshot: snapshot)
     if let container = nativeContainer {
       container.view.alpha = 1
@@ -464,6 +478,17 @@ final class ShellController: UIViewController, UIPopoverPresentationControllerDe
     setNeedsStatusBarAppearanceUpdate()
   }
 
+  /// 等待较久后显示安全恢复入口；重试仅重新加载当前文档，不重放业务动作。
+  func showStartupWait() {
+    startupView?.showPageWait(
+      message: "页面仍在加载，正在等待连接和页面资源就绪。",
+      retry: { [weak self] in
+        guard let self, self.startupView != nil else { return }
+        self.coordinator.reload()
+      },
+      changeAddress: { [weak self] in self?.onConnection() })
+  }
+
   /// 布局量测和导航容器切换仍在覆盖层后执行，后台网页也不能被辅助功能提前访问。
   private func keepStartupInFront() {
     guard let startupView else { return }
@@ -528,9 +553,10 @@ final class ShellController: UIViewController, UIPopoverPresentationControllerDe
     UIAccessibility.post(notification: .screenChanged, argument: title)
   }
 
-  /// 当前快照决定正文宿主，未就绪时只使用启动页后的文档暂存容器。
+  /// 独立入口不占用业务栏目宿主；未就绪时也由共享容器暂存正文。
   private var selectedHost: ContentHostController {
     guard latest?.chrome.bottomVisible == true else { return compatibilityHost }
+    if latest?.route.rootId == nil { return compatibilityHost }
     if let id = latest?.route.rootId, let host = hosts.first(where: { $0.rootId == id }) {
       return host
     }
@@ -545,7 +571,9 @@ final class ShellController: UIViewController, UIPopoverPresentationControllerDe
     {
       return rootNavigations[index]
     }
-    if latest?.chrome.bottomVisible == true { return rootNavigations.first }
+    if latest?.chrome.bottomVisible == true, latest?.route.rootId != nil {
+      return rootNavigations.first
+    }
     return compatibilityNavigation
   }
 
@@ -565,6 +593,7 @@ final class ShellController: UIViewController, UIPopoverPresentationControllerDe
     overrideUserInterfaceStyle = style
     AccountAppearance.remember(
       snapshot.chrome, for: coordinator.instance.id, traits: traitCollection)
+    synchronizeContentBackground()
     setNeedsStatusBarAppearanceUpdate()
     if let color = snapshot.chrome.accentColor,
       let value = UInt32(color.dropFirst(), radix: 16)
@@ -578,9 +607,24 @@ final class ShellController: UIViewController, UIPopoverPresentationControllerDe
     }
   }
 
+  /// 系统滚动渐变采样 WebView 的底色；主题切换后重新解析，Sheet 承载期间保持透明。
+  private func synchronizeContentBackground() {
+    let transparent = webSheet != nil && !sheetDismissing
+    let background: UIColor =
+      transparent ? .clear : AccountAppearance.background(for: coordinator.instance.id)
+    coordinator.content.view.backgroundColor = background
+    coordinator.webView.isOpaque = !transparent
+    coordinator.webView.backgroundColor = background
+    // WebKit 的页面底色会保留显式覆盖值，需要按当前 trait 更新，不能停留在弹窗归还时的颜色。
+    coordinator.webView.underPageBackgroundColor = background.resolvedColor(with: traitCollection)
+    coordinator.webView.scrollView.backgroundColor = background
+  }
+
   /// 顶栏只使用原生导航语义；动作仍回到网页注册的回调。
   private func configureHeader(_ host: ContentHostController, snapshot: NavigationSnapshot) {
-    let trailing = snapshot.actions.filter { $0.position != .accessory }
+    let moveAccessory = ["/dashboard", "/recommend", "/discover"].contains(
+      snapshot.route.fullPath.components(separatedBy: "?")[0])
+    let trailing = snapshot.actions.filter { $0.position != .accessory || moveAccessory }
     let identity = ObjectIdentifier(host)
     // Sheet 自己承载关闭；页面返回状态在系统动画开始前不能因网页弹层先闪出一个箭头。
     let canGoBack =
@@ -690,9 +734,11 @@ final class ShellController: UIViewController, UIPopoverPresentationControllerDe
         bottomNavigation.bottomAnchor.constraint(equalTo: view.bottomAnchor),
       ])
     }
-    let accessory = snapshot.actions.first { $0.position == .accessory }.map { action in
-      bottomActionButton(action)
-    }
+    let moveAccessory = ["/dashboard", "/recommend", "/discover"].contains(
+      snapshot.route.fullPath.components(separatedBy: "?")[0])
+    let accessory =
+      (!moveAccessory ? snapshot.actions.first { $0.position == .accessory } : nil)
+      .map { bottomActionButton($0) } ?? searchButton(snapshot)
     bottomNavigation.apply(snapshot, action: accessory) { [weak self] rootId in
       if self?.latest?.roots.first(where: { $0.id == rootId })?.path == "/apps" {
         self?.moreMenu.scrollToBeginning()
@@ -712,6 +758,9 @@ final class ShellController: UIViewController, UIPopoverPresentationControllerDe
     -> UIBarButtonItem
   {
     var configuration = UIButton.Configuration.plain()
+    if #available(iOS 26.0, *) { configuration = .glass() }
+    configuration.cornerStyle = .capsule
+    configuration.contentInsets = .zero
     configuration.image = UIImage(systemName: "ellipsis")
     let existing = item?.customView as? NativeMenuButton
     let button = existing ?? NativeMenuButton(configuration: configuration)
@@ -719,12 +768,16 @@ final class ShellController: UIViewController, UIPopoverPresentationControllerDe
     button.accessibilityIdentifier = "native-top-actions"
     button.isEnabled = enabled
     if existing == nil {
+      button.translatesAutoresizingMaskIntoConstraints = false
       button.onMenuClose = { [weak self] in self?.closeUserMenu() }
-      button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
-      button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+      // 图标菜单固定等宽等高，避免导航栏按内边距扩展为椭圆。
+      button.widthAnchor.constraint(equalToConstant: 44).isActive = true
+      button.heightAnchor.constraint(equalToConstant: 44).isActive = true
     }
-    let globalOrder = ["search", "shortcuts", "notifications", "plugins", "profile"]
-    let globals = overflow.enumerated().filter { $0.element.isGlobal }.sorted { left, right in
+    // 搜索固定由右下角进入，操作菜单不重复列出该全局动作。
+    let menuActions = overflow.filter { !$0.actionId.hasSuffix(":global:search") }
+    let globalOrder = ["shortcuts", "notifications", "plugins", "profile"]
+    let globals = menuActions.enumerated().filter { $0.element.isGlobal }.sorted { left, right in
       let leftRank =
         globalOrder.firstIndex(of: String(left.element.actionId.split(separator: ":").last ?? ""))
         ?? globalOrder.count
@@ -733,7 +786,7 @@ final class ShellController: UIViewController, UIPopoverPresentationControllerDe
         ?? globalOrder.count
       return leftRank == rightRank ? left.offset < right.offset : leftRank < rightRank
     }.map(\.element)
-    let pages = overflow.filter { !$0.isGlobal }
+    let pages = menuActions.filter { !$0.isGlobal }
     /// 继续引用原网页动作，不因菜单分组复制业务或绕过禁用状态。
     func menuElement(_ action: ActionSnapshot) -> UIMenuElement {
       if action.actionId.hasSuffix(":global:profile"), action.panel != nil,
@@ -742,12 +795,24 @@ final class ShellController: UIViewController, UIPopoverPresentationControllerDe
         return userSubmenu(action)
       }
       if let menu = action.menu, !menu.isEmpty {
+        if self.latest?.route.fullPath.components(separatedBy: "?")[0] == "/dashboard",
+          !action.isGlobal
+        {
+          return UIMenu(options: .displayInline, children: actionMenu(action, items: menu).children)
+        }
         return UIMenu(
           title: action.title, image: symbol(action.icon),
           children: actionMenu(action, items: menu).children)
       }
+      // 旧前端的动态按钮未声明标题，按已确认的页面功能补全；新前端标题优先。
+      let path = self.latest?.route.fullPath.components(separatedBy: "?")[0]
+      let legacyTitles = ["/recommend": "自定义推荐", "/discover": "自定义探索标签"]
+      let title =
+        !action.isGlobal && action.actionId.hasSuffix(":accessory")
+          && (action.title == "当前页面" || action.title.hasSuffix(" · 更多"))
+        ? (path.flatMap { legacyTitles[$0] } ?? action.title) : action.title
       return UIAction(
-        title: action.title, image: symbol(action.icon),
+        title: title, image: symbol(action.icon),
         attributes: action.enabled && !action.loading ? [] : [.disabled]
       ) { [weak self, weak button] _ in
         guard let self else { return }
@@ -793,7 +858,7 @@ final class ShellController: UIViewController, UIPopoverPresentationControllerDe
           UIAction(title: "重新加载", image: UIImage(systemName: "arrow.clockwise")) { [weak self] _ in
             self?.coordinator.reload()
           },
-          UIAction(title: "更改服务地址", image: UIImage(systemName: "server.rack")) { [weak self] _ in
+          UIAction(title: "切换服务", image: UIImage(systemName: "server.rack")) { [weak self] _ in
             self?.onConnection()
           },
         ])
@@ -813,6 +878,8 @@ final class ShellController: UIViewController, UIPopoverPresentationControllerDe
     button.showsMenuAsPrimaryAction = true
     // 异步用户资格或状态更新只能更新菜单，不能换掉正在承载二级菜单的系统按钮。
     let item = item ?? UIBarButtonItem(customView: button)
+    // 使用按钮自身的圆形玻璃，系统共享背景会额外增加横向留白。
+    if #available(iOS 26.0, *) { item.hidesSharedBackground = true }
     // UIBarButtonItem 会同步自定义按钮的启用状态，两层保持一致，避免安装时重新启用。
     item.isEnabled = enabled
     return item
@@ -1034,10 +1101,6 @@ final class ShellController: UIViewController, UIPopoverPresentationControllerDe
     let token = UUID()
     sheetSnapshotToken = token
     preparingSheetID = descriptor.id
-    if latest?.chrome.content == .menu {
-      finishWebSheetPreparation(id: descriptor.id, token: token, page: nil)
-      return
-    }
     let page = selectedHost.view.snapshotView(afterScreenUpdates: false)
     finishWebSheetPreparation(id: descriptor.id, token: token, page: page)
   }
@@ -1088,11 +1151,7 @@ final class ShellController: UIViewController, UIPopoverPresentationControllerDe
     navigation.didMove(toParent: self)
     controller.contentHost.attach(coordinator.content)
     coordinator.content.view.isHidden = false
-    coordinator.content.view.backgroundColor = .clear
-    coordinator.webView.isOpaque = false
-    coordinator.webView.backgroundColor = .clear
-    coordinator.webView.underPageBackgroundColor = .clear
-    coordinator.webView.scrollView.backgroundColor = .clear
+    synchronizeContentBackground()
     controller.apply(descriptor, style: modalInterfaceStyle)
     navigation.presentationController?.delegate = controller
     navigation.view.layoutIfNeeded()
@@ -1209,12 +1268,7 @@ final class ShellController: UIViewController, UIPopoverPresentationControllerDe
     let host = nativeVisible ? selectedHost : compatibilityHost
     host.attach(coordinator.content)
     if let placeholder = sheetPagePlaceholder { host.view.bringSubviewToFront(placeholder) }
-    let background = NavigationSymbols.color(latest?.chrome.backgroundColor) ?? .systemBackground
-    coordinator.content.view.backgroundColor = background
-    coordinator.webView.isOpaque = true
-    coordinator.webView.backgroundColor = background
-    coordinator.webView.underPageBackgroundColor = background
-    coordinator.webView.scrollView.backgroundColor = background
+    synchronizeContentBackground()
     host.view.layoutIfNeeded()
     coordinator.layoutChanged()
     if let id, nativeVisible {
@@ -1253,6 +1307,10 @@ final class ShellController: UIViewController, UIPopoverPresentationControllerDe
       return false
     }
     guard presentedViewController == nil else { return false }
+    if action.actionId.hasSuffix(":global:search"), action.dataAttr == "native-search-page" {
+      coordinator.invoke(action)
+      return true
+    }
     openNativePanel(action)
     return panelAction?.actionId == action.actionId && panelAction?.ownerId == action.ownerId
   }
@@ -1476,19 +1534,101 @@ final class ShellController: UIViewController, UIPopoverPresentationControllerDe
     dismissNativePanel()
   }
 
-  /// 更多目录在 Sheet 下保留真实原生视图，唯一 WebView 进入弹窗后仍保持可见。
+  /// 搜索作为透明原生正文嵌入当前导航宿主，动态壁纸继续由唯一 WebView 渲染。
+  private func configureSearchPage(_ host: ContentHostController, snapshot: NavigationSnapshot) {
+    guard snapshot.chrome.content == .search,
+      let action = snapshot.actions.first(where: { $0.actionId.hasSuffix(":global:search") }),
+      let panel = action.panel
+    else {
+      removeSearchPage()
+      return
+    }
+    let controller = searchPage ?? SearchPageController()
+    searchPage = controller
+    controller.onEvent = { [weak self] event, item, value in
+      guard let self, self.latest?.chrome.content == .search,
+        let current = self.latest?.actions.first(where: {
+          $0.actionId == action.actionId && $0.ownerId == action.ownerId
+        }),
+        current.enabled, !current.loading
+      else { return }
+      self.coordinator.invoke(current, panelEvent: event, itemId: item, value: value)
+    }
+    controller.apply(
+      panel,
+      accent: NavigationSymbols.color(snapshot.chrome.accentColor) ?? AccountAppearance.accent)
+    if controller.parent !== host {
+      controller.willMove(toParent: nil)
+      controller.view.removeFromSuperview()
+      controller.removeFromParent()
+      host.addChild(controller)
+      controller.view.translatesAutoresizingMaskIntoConstraints = false
+      host.view.addSubview(controller.view)
+      NSLayoutConstraint.activate([
+        controller.view.topAnchor.constraint(equalTo: host.view.topAnchor),
+        controller.view.bottomAnchor.constraint(equalTo: host.view.bottomAnchor),
+        controller.view.leadingAnchor.constraint(equalTo: host.view.leadingAnchor),
+        controller.view.trailingAnchor.constraint(equalTo: host.view.trailingAnchor),
+      ])
+      controller.didMove(toParent: host)
+    }
+    host.view.bringSubviewToFront(controller.view)
+    host.trackContentScrollView(controller.tableView)
+  }
+
+  /// 离开搜索先解除输入和旧回调；结果页返回保留类型，切换身份则丢弃全部展示状态。
+  private func removeSearchPage(resetState: Bool = false) {
+    guard let controller = searchPage else { return }
+    controller.view.endEditing(true)
+    controller.willMove(toParent: nil)
+    controller.view.removeFromSuperview()
+    controller.removeFromParent()
+    controller.onEvent = nil
+    if resetState { searchPage = nil }
+  }
+
+  /// 无页内动作时始终提供同尺寸搜索按钮，入口仍复用当前授权的网页全局动作。
+  private func searchButton(_ snapshot: NavigationSnapshot) -> UIButton {
+    var config = UIButton.Configuration.tinted()
+    if #available(iOS 26.0, *) { config = .glass() }
+    config.cornerStyle = .capsule
+    config.image = UIImage(
+      systemName: "magnifyingglass", withConfiguration: NavigationSymbols.bottomConfiguration)
+    if snapshot.chrome.content == .search {
+      config.baseForegroundColor =
+        NavigationSymbols.color(snapshot.chrome.accentColor) ?? AccountAppearance.accent
+    }
+    let action = snapshot.actions.first { $0.actionId.hasSuffix(":global:search") }
+    let button = UIButton(
+      configuration: config,
+      primaryAction: UIAction { [weak self] _ in
+        guard let self, let action else { return }
+        if self.latest?.chrome.content == .search { return }
+        if action.dataAttr == "native-search-page" {
+          self.coordinator.invoke(action)
+        } else if action.panel != nil {
+          self.openNativePanel(action)
+        } else {
+          self.coordinator.invoke(action)
+        }
+      })
+    button.accessibilityLabel = "搜索"
+    button.isEnabled = action?.enabled == true && snapshot.presentation?.overlayOpen != true
+    return button
+  }
+
+  /// 原生目录叠在实时网页背景上；Sheet 搬走 WebView 时由底页快照保持相同壁纸。
   private func configureMoreMenu(_ host: ContentHostController, snapshot: NavigationSnapshot) {
+    configureSearchPage(host, snapshot: snapshot)
     let visible = snapshot.chrome.content == .menu
-    coordinator.content.view.isHidden = visible && webSheet == nil
+    coordinator.content.view.isHidden = false
     guard visible else {
       removeMoreMenu()
-      host.trackContentScrollView(coordinator.webView.scrollView)
+      if searchPage?.parent == nil { host.trackContentScrollView(coordinator.webView.scrollView) }
       return
     }
     moreMenu.apply(
       snapshot.moreMenu ?? [],
-      background: NavigationSymbols.color(snapshot.chrome.backgroundColor)
-        ?? .systemGroupedBackground,
       accent: NavigationSymbols.color(snapshot.chrome.accentColor) ?? AccountAppearance.accent)
     if moreMenu.parent !== host {
       removeMoreMenu()
@@ -1503,6 +1643,8 @@ final class ShellController: UIViewController, UIPopoverPresentationControllerDe
       ])
       moreMenu.didMove(toParent: host)
     }
+    // Sheet 关闭时 WebView 会重新加入宿主，透明原生目录仍须位于它上方。
+    host.view.bringSubviewToFront(moreMenu.view)
     host.trackContentScrollView(moreMenu.tableView)
   }
 
@@ -1519,6 +1661,8 @@ final class ShellController: UIViewController, UIPopoverPresentationControllerDe
     if controller.parent == nil { add(controller) }
     controller.view.alpha = 1
     controller.view.isUserInteractionEnabled = true
+    // 独立入口会复用启动容器，安装时撤销启动/恢复阶段遗留的无障碍隐藏。
+    controller.view.accessibilityElementsHidden = startupView != nil || recoveryView != nil
     view.bringSubviewToFront(controller.view)
     if let old = activeContainer, old !== controller { remove(old) }
     activeContainer = controller
