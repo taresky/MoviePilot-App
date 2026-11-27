@@ -39,9 +39,11 @@ final class SearchPageController: UITableViewController, UISearchBarDelegate {
     super.viewDidLoad()
     tableView.accessibilityIdentifier = "native-search-page"
     tableView.backgroundColor = .clear
-    registerForTraitChanges([UITraitUserInterfaceStyle.self]) {
-      (controller: SearchPageController, _: UITraitCollection) in
-      controller.refreshGlass()
+    if #available(iOS 17.0, *) {
+      registerForTraitChanges([UITraitUserInterfaceStyle.self]) {
+        (controller: SearchPageController, _: UITraitCollection) in
+        controller.refreshGlass()
+      }
     }
     tableView.backgroundView = backdrop
     backdrop.isUserInteractionEnabled = false
@@ -76,6 +78,16 @@ final class SearchPageController: UITableViewController, UISearchBarDelegate {
     tableView.tableHeaderView = header
   }
 
+  /// iOS 16 明暗变化仍刷新原生搜索材质，不重建搜索输入或网页会话。
+  override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+    super.traitCollectionDidChange(previousTraitCollection)
+    if #unavailable(iOS 17.0),
+      previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle
+    {
+      refreshGlass()
+    }
+  }
+
   /// 窗口宽度、键盘和 Dynamic Type 变化后只量测原生控件，不截取或复制壁纸。
   override func viewDidLayoutSubviews() {
     super.viewDidLayoutSubviews()
@@ -102,8 +114,10 @@ final class SearchPageController: UITableViewController, UISearchBarDelegate {
     if tableView.tintColor != accent { categorySignature = "" }
     tableView.tintColor = accent
     search.tintColor = accent
-    if !search.searchTextField.isFirstResponder { search.text = snapshot.search?.text }
-    search.placeholder = snapshot.search?.placeholder
+    UIView.performWithoutAnimation {
+      if !search.searchTextField.isFirstResponder { search.text = snapshot.search?.text }
+      search.placeholder = snapshot.search?.placeholder
+    }
     let available = ["media", "resources", "local"].filter { id in
       id == "local" || snapshot.sections.contains { $0.id == id && !$0.items.isEmpty }
     }
@@ -111,7 +125,8 @@ final class SearchPageController: UITableViewController, UISearchBarDelegate {
       scopeIDs = available
       scope.removeAllSegments()
       for (index, id) in available.enumerated() {
-        let title = id == "local" ? "应用" : id == "resources" ? "资源" : "媒体"
+        let title =
+          id == "local" ? L10n.text("应用") : id == "resources" ? L10n.text("资源") : L10n.text("媒体")
         scope.insertSegment(withTitle: title, at: index, animated: false)
       }
     }
@@ -167,18 +182,32 @@ final class SearchPageController: UITableViewController, UISearchBarDelegate {
         child.removeFromSuperview()
       }
       for item in categories {
-        var config = UIButton.Configuration.tinted()
-        if #available(iOS 26.0, *) { config = .glass() }
+        let isSelected = item.id == selected?.id
+        var config: UIButton.Configuration
+        if #available(iOS 26.0, *) {
+          config = .glass()
+        } else {
+          // 旧系统的 tinted 配置会同时用强调色绘制选中态背景和前景，造成图标与文字消失。
+          config = .filled()
+          config.baseBackgroundColor = tableView.tintColor.withAlphaComponent(
+            isSelected ? 0.9 : 0.24)
+          config.baseForegroundColor = .label
+        }
         let labels = [
-          "media-media": "影视", "media-music": "音乐", "media-collection": "合集", "media-person": "人物",
-          "resource-torrent": "影视资源", "resource-music": "音乐资源", "resource-subtitle": "字幕",
+          "media-media": L10n.text("影视"), "media-library": L10n.text("媒体库"),
+          "media-music": L10n.text("音乐"),
+          "media-collection": L10n.text("合集"), "media-person": L10n.text("人物"),
+          "resource-torrent": L10n.text("影视资源"), "resource-music": L10n.text("音乐资源"),
+          "resource-subtitle": L10n.text("字幕"),
         ]
         config.title = labels[item.id] ?? item.title
         config.image = item.icon.flatMap { NavigationSymbols.image($0) }
         config.imagePlacement = .top
         config.imagePadding = 8
         config.cornerStyle = .large
-        config.baseForegroundColor = item.id == selected?.id ? tableView.tintColor : .label
+        if #available(iOS 26.0, *) {
+          config.baseForegroundColor = isSelected ? tableView.tintColor : .label
+        }
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer {
           incoming in
           var attributes = incoming
@@ -199,8 +228,11 @@ final class SearchPageController: UITableViewController, UISearchBarDelegate {
     types.isHidden = categories.isEmpty
     var next: [Group] = []
     let keyword = snapshot.search?.text ?? ""
-    queryTitle.text = keyword.isEmpty ? "搜索" : "搜索“\(keyword)”"
-    queryTitle.isHidden = selectedScope == "local" && keyword.isEmpty
+    UIView.performWithoutAnimation {
+      queryTitle.text = keyword.isEmpty ? L10n.text("搜索") : L10n.format("搜索“%@”", keyword)
+      queryTitle.isHidden = selectedScope == "local" && keyword.isEmpty
+      queryTitle.layoutIfNeeded()
+    }
     var submit: [NativePanelItem] = []
     if let selected {
       let choices = (selected.children ?? []).filter { $0.primary != true }
@@ -209,7 +241,7 @@ final class SearchPageController: UITableViewController, UISearchBarDelegate {
         next.append(
           Group(
             id: choices.contains { $0.id.hasPrefix("native-site-") } ? "legacy-sites" : "choices",
-            title: selectedScope == "resources" ? "选择站点" : "数据源",
+            title: selectedScope == "resources" ? L10n.text("选择站点") : L10n.text("数据源"),
             items: choices))
       }
       submit = run
@@ -265,7 +297,7 @@ final class SearchPageController: UITableViewController, UISearchBarDelegate {
       let cell = UITableViewCell()
       var content = cell.defaultContentConfiguration()
       let names = group.items.filter { $0.selected == true }.map(\.title)
-      content.text = names.isEmpty ? "选择站点" : names.joined(separator: "、")
+      content.text = names.isEmpty ? L10n.text("选择站点") : names.joined(separator: "、")
       content.textProperties.numberOfLines = 2
       cell.contentConfiguration = content
       cell.backgroundConfiguration = .clear()
@@ -430,10 +462,11 @@ private final class SearchSitePickerController: UITableViewController {
   /// 系统完成按钮只关闭选择层，站点勾选仍由 Vue 回调更新。
   override func viewDidLoad() {
     super.viewDidLoad()
-    title = "选择站点"
+    title = L10n.text("选择站点")
     tableView.accessibilityIdentifier = "native-search-site-picker"
     navigationItem.rightBarButtonItem = UIBarButtonItem(
-      title: "完成", primaryAction: UIAction { [weak self] _ in self?.dismiss(animated: true) })
+      title: L10n.text("完成"),
+      primaryAction: UIAction { [weak self] _ in self?.dismiss(animated: true) })
   }
 
   /// 重新消费 Vue 的已选状态，避免原生维护第二份选择结果。

@@ -3,19 +3,29 @@ import MoviePilotCore
 import UIKit
 import WebKit
 
-/// 系统浮层自带 Liquid Glass；清除内容实色，避免把系统材质盖住或叠加另一层玻璃。
+/// 系统浮层在 iOS 26+ 使用 Liquid Glass，旧系统提供不透明底色以隔离底页文字。
 @MainActor
 enum NativeModalAppearance {
-  /// 表格和分组背景保持透明，材质、圆角与阴影由系统 presentation controller 负责。
+  /// 只有支持系统玻璃背景时才透明；动态语义色在旧系统下继续跟随 App 的明暗主题。
+  static var backgroundColor: UIColor {
+    if #available(iOS 26.0, *) { .clear } else { .systemBackground }
+  }
+
+  /// 表格与导航容器共用兼容底色，圆角、阴影和转场仍由系统负责。
   static func apply(to controller: UITableViewController) {
-    controller.tableView.backgroundColor = .clear
+    controller.tableView.backgroundColor = backgroundColor
     controller.tableView.backgroundView = nil
-    controller.navigationController?.view.backgroundColor = .clear
+    controller.navigationController?.view.backgroundColor = backgroundColor
   }
 
   /// 呈现层也跟随 App 主题；材质厚度、外围压暗和转场全部使用 UIKit 默认行为。
   static func apply(to presentation: UIPresentationController?, style: UIUserInterfaceStyle) {
-    presentation?.traitOverrides.userInterfaceStyle = style
+    if #available(iOS 17.0, *) {
+      presentation?.traitOverrides.userInterfaceStyle = style
+    } else {
+      presentation?.overrideTraitCollection =
+        style == .unspecified ? nil : UITraitCollection(userInterfaceStyle: style)
+    }
   }
 }
 
@@ -59,15 +69,24 @@ enum NativeUserMenu {
     let menu = UIMenu(
       title: title, image: avatar.map(roundAvatar) ?? fallbackImage,
       children: snapshot.sections.compactMap { section in
-        guard !section.items.isEmpty else { return nil }
+        let items = section.items.filter { !["customizer", "language"].contains($0.id) }
+        guard !items.isEmpty else { return nil }
         return UIMenu(
           title: section.title ?? "", options: .displayInline,
-          children: section.items.map { element($0, onSelect: onSelect) })
+          children: items.map { element($0, onSelect: onSelect) })
       })
     if let profile = snapshot.profile {
       menu.subtitle = [profile.name, profile.detail].compactMap { $0 }.joined(separator: " · ")
     }
     return menu
+  }
+
+  /// 连接与显示复用网页主题动作；语言由宿主的共享设置入口统一处理。
+  static func appearance(
+    snapshot: NativePanelSnapshot, onSelect: @escaping (String) -> Void
+  ) -> [UIMenuElement] {
+    snapshot.sections.flatMap(\.items).filter { $0.id == "customizer" }
+      .map { element($0, onSelect: onSelect) }
   }
 
   /// 子选项保留原顺序与状态，只有当前网页声明的稳定项目 ID 能回传。
@@ -297,10 +316,12 @@ final class NativePanelController: UITableViewController, UISearchBarDelegate {
     tableView.estimatedRowHeight = 64
     tableView.keyboardDismissMode = .interactive
     tableView.alwaysBounceVertical = true
-    registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) {
-      (controller: NativePanelController, _: UITraitCollection) in
-      controller.measuredWidth = nil
-      controller.view.setNeedsLayout()
+    if #available(iOS 17.0, *) {
+      registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) {
+        (controller: NativePanelController, _: UITraitCollection) in
+        controller.measuredWidth = nil
+        controller.view.setNeedsLayout()
+      }
     }
     NativeModalAppearance.apply(to: self)
     navigationItem.rightBarButtonItem = UIBarButtonItem(
@@ -314,6 +335,18 @@ final class NativePanelController: UITableViewController, UISearchBarDelegate {
     search.searchTextField.autocorrectionType = .no
     search.searchTextField.autocapitalizationType = .none
     apply(snapshot)
+  }
+
+  /// iOS 16 的字号变化撤销旧量测，让浮层按当前字体和可用空间重新布局。
+  override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+    super.traitCollectionDidChange(previousTraitCollection)
+    if #unavailable(iOS 17.0),
+      previousTraitCollection?.preferredContentSizeCategory
+        != traitCollection.preferredContentSizeCategory
+    {
+      measuredWidth = nil
+      view.setNeedsLayout()
+    }
   }
 
   /// 内容较少的子菜单缩短浮层高度，长列表限制在底栏上方，避免留下大块空白。
@@ -665,9 +698,9 @@ final class NativePanelController: UITableViewController, UISearchBarDelegate {
     avatar.clipsToBounds = true
     avatar.layer.cornerRadius = 28
     avatar.isAccessibilityElement = true
-    avatar.accessibilityLabel = "用户头像"
+    avatar.accessibilityLabel = L10n.text("用户头像")
     avatar.accessibilityIdentifier = "native-profile-avatar"
-    avatar.accessibilityValue = "默认头像"
+    avatar.accessibilityValue = L10n.text("默认头像")
     NSLayoutConstraint.activate([
       avatar.widthAnchor.constraint(equalToConstant: 56),
       avatar.heightAnchor.constraint(equalToConstant: 56),
@@ -679,7 +712,7 @@ final class NativePanelController: UITableViewController, UISearchBarDelegate {
         if let loaded {
           avatar.image = loaded
           avatar.tintColor = nil
-          avatar.accessibilityValue = "头像已加载"
+          avatar.accessibilityValue = L10n.text("头像已加载")
         }
       }
     }
@@ -741,7 +774,7 @@ final class NativePanelController: UITableViewController, UISearchBarDelegate {
       ? feedState.isEmpty : sections.allSatisfy({ $0.1.isEmpty })
     if empty && snapshot.loading != true && snapshot.loadError == nil {
       let label = UILabel()
-      label.text = snapshot.emptyText ?? "暂无内容"
+      label.text = snapshot.emptyText ?? L10n.text("暂无内容")
       label.textColor = .secondaryLabel
       label.font = .preferredFont(forTextStyle: .body)
       label.numberOfLines = 0
@@ -760,7 +793,7 @@ final class NativePanelController: UITableViewController, UISearchBarDelegate {
     }
     if path.isEmpty && snapshot.feed == nil && snapshot.hasMore == true {
       var config = UIButton.Configuration.tinted()
-      config.title = "下一页"
+      config.title = L10n.text("下一页")
       config.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 24, bottom: 12, trailing: 24)
       let more = UIButton(
         configuration: config,
@@ -775,7 +808,7 @@ final class NativePanelController: UITableViewController, UISearchBarDelegate {
       snapshot.loading != true
     {
       let label = UILabel()
-      label.text = "已显示全部内容"
+      label.text = L10n.text("已显示全部内容")
       label.font = .preferredFont(forTextStyle: .footnote)
       label.textColor = .secondaryLabel
       label.accessibilityIdentifier = "native-panel-feed-end"
@@ -863,7 +896,7 @@ final class NativePanelController: UITableViewController, UISearchBarDelegate {
       content.imageProperties.reservedLayoutSize = CGSize(width: 56, height: 84)
       content.imageProperties.cornerRadius = 6
       content.imageProperties.accessibilityIgnoresInvertColors = true
-      cell.accessibilityValue = "海报加载中"
+      cell.accessibilityValue = L10n.text("海报加载中")
       imageTasks.append(
         Task { [weak cell, images] in
           let poster = await images.image(image)
@@ -872,7 +905,7 @@ final class NativePanelController: UITableViewController, UISearchBarDelegate {
           updated?.image = poster.map(Self.portraitThumbnail) ?? UIImage(systemName: "photo")
           if poster != nil { updated?.imageProperties.tintColor = nil }
           cell.contentConfiguration = updated
-          cell.accessibilityValue = poster == nil ? "海报暂不可用" : "含海报"
+          cell.accessibilityValue = poster == nil ? L10n.text("海报暂不可用") : L10n.text("含海报")
         })
     }
     cell.contentConfiguration = content
@@ -968,19 +1001,20 @@ final class NativePanelController: UITableViewController, UISearchBarDelegate {
             state: child.selected == true ? .on : .off
           ) { [weak self] _ in self?.selectGridItem(item.id, childID: child.id) }
         })
-      button.accessibilityHint = [item.subtitle, "长按可查看操作"].compactMap { $0 }.joined(separator: "，")
+      button.accessibilityHint = [item.subtitle, L10n.text("长按可查看操作")].compactMap { $0 }.joined(
+        separator: "，")
     }
     if let image = item.image {
-      button.accessibilityValue = "图标加载中"
+      button.accessibilityValue = L10n.text("图标加载中")
       imageTasks.append(
         Task { [weak button, images] in
           let loaded = await images.image(image)
           guard !Task.isCancelled, let button else { return }
           if let thumbnail = loaded?.preparingThumbnail(of: CGSize(width: 48, height: 48)) {
             button.configuration?.image = thumbnail.withRenderingMode(.alwaysOriginal)
-            button.accessibilityValue = "插件图标已加载"
+            button.accessibilityValue = L10n.text("插件图标已加载")
           } else {
-            button.accessibilityValue = "默认图标"
+            button.accessibilityValue = L10n.text("默认图标")
           }
         })
     }

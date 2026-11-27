@@ -64,6 +64,10 @@ final class OperationMenuController: UITableViewController, UISheetPresentationC
     navigation.modalPresentationStyle = .pageSheet
     navigation.view.accessibilityIdentifier = "native-operation-menu-sheet"
     guard let sheet = navigation.sheetPresentationController else { return }
+    let style =
+      navigation.overrideUserInterfaceStyle == .unspecified
+      ? presentingView.traitCollection.userInterfaceStyle : navigation.overrideUserInterfaceStyle
+    NativeModalAppearance.apply(to: sheet, style: style)
     sheet.detents = [
       .custom(identifier: .init("operation-content")) { [weak self, weak presentingView] context in
         // UIKit 会在 detent 之外加底部安全区，先限制总高度再扣回这部分。
@@ -228,14 +232,14 @@ final class OperationMenuController: UITableViewController, UISheetPresentationC
       title = submenu.title
     }
     path = validPath
-    navigationItem.title = title ?? "操作"
+    navigationItem.title = title ?? L10n.text("操作")
     navigationItem.leftBarButtonItem =
       path.isEmpty
       ? nil
       : UIBarButtonItem(
         image: UIImage(systemName: "chevron.left"), style: .plain,
         target: self, action: #selector(back))
-    navigationItem.leftBarButtonItem?.accessibilityLabel = "返回上一级菜单"
+    navigationItem.leftBarButtonItem?.accessibilityLabel = L10n.text("返回上一级菜单")
     sections = [Section()]
     append(rows)
     sections.removeAll { $0.rows.isEmpty }

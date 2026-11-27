@@ -95,7 +95,9 @@ public struct ServerAddress: Codable, Equatable, Sendable {
     var base = URLComponents(url: document, resolvingAgainstBaseURL: true)
     base?.fragment = nil
     guard let reference = base?.url?.absoluteString,
-      let target = URL(string: "\(reference)#\(confirmedRoute)", encodingInvalidCharacters: false),
+      // 旧 Foundation 也必须拒绝自动转义的输入，不能把非法路由修正成另一个恢复目标。
+      let target = URL(string: "\(reference)#\(confirmedRoute)"),
+      target.absoluteString == "\(reference)#\(confirmedRoute)",
       contains(target)
     else { return document }
     return target
@@ -104,7 +106,7 @@ public struct ServerAddress: Codable, Equatable, Sendable {
   /// Foundation 可保存带网卡标识的 IPv6，但浏览器 URL 不支持；保留旧配置身份并阻止连接。
   public var webCompatibilityError: String? {
     guard origin.host.contains(":"), origin.host.contains("%") else { return nil }
-    return "此 IPv6 地址包含网卡标识，网页无法使用。请改用 .local 主机名或其他可访问的地址。"
+    return L10n.text("此 IPv6 地址包含网卡标识，网页无法使用。请改用 .local 主机名或其他可访问的地址。")
   }
 
   /// 判断主机是否属于私网、链路本地、回环或本地 DNS。

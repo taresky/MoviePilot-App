@@ -96,8 +96,9 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         guard !Task.isCancelled else { return }
         WidgetService.shared.cancelOpen()
         let alert = UIAlertController(
-          title: "小组件资料不可用", message: "请在对应服务登录后，重新启用小组件资料。", preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "好", style: .default))
+          title: L10n.text("小组件资料不可用"), message: L10n.text("请在对应服务登录后，重新启用小组件资料。"),
+          preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: L10n.text("好"), style: .default))
         self.window?.rootViewController?.present(alert, animated: true)
       }
     }
@@ -117,14 +118,15 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
   func sceneDidEnterBackground(_ scene: UIScene) { coordinator?.setLifecycle("background") }
 
   /// 断开旧会话后显示实例配置，旧脚本 handler 不得继续接收命令。
-  private func showConnection() {
+  private func showConnection(message: String? = nil) {
     if instances.selected != nil { homeShortcut.clear() }
     widgetLinkTask?.cancel()
     widgetLinkTask = nil
     WidgetService.shared.cancelOpen()
     coordinator?.stop()
     coordinator = nil
-    let controller = ConnectionController(instances: instances) { [weak self] instance in
+    let controller = ConnectionController(instances: instances, connectionError: message) {
+      [weak self] instance in
       // 清除旧版本的网页偏好，重新连接始终走原生认证。
       UserDefaults.standard.removeObject(forKey: "moviepilot.web-login.\(instance.id)")
       self?.connect(instance)
@@ -137,6 +139,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
   private func connect(_ instance: SavedInstance) {
     coordinator?.stop()
     coordinator = nil
+    LanguagePreferences(defaults: .standard).activate(instance.id)
+    LanguageSettings.refreshShortcuts()
     guard instance.address.webCompatibilityError == nil else {
       showConnection()
       return
@@ -170,27 +174,30 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         self.openWeb(instance, authentication: result)
         if storageFailed {
           let alert = UIAlertController(
-            title: "已登录", message: "此设备未能安全保存部分登录信息，下次可能需要重新输入。", preferredStyle: .alert)
-          alert.addAction(UIAlertAction(title: "好", style: .default))
+            title: L10n.text("已登录"), message: L10n.text("此设备未能安全保存部分登录信息，下次可能需要重新输入。"),
+            preferredStyle: .alert)
+          alert.addAction(UIAlertAction(title: L10n.text("好"), style: .default))
           self.window?.rootViewController?.present(alert, animated: true)
         }
       },
-      onConnection: { [weak self] in self?.showConnection() })
+      onConnection: { [weak self] message in self?.showConnection(message: message) })
     window?.rootViewController = AccountAppearance.navigationController(
       root: login, instance: instance.id)
   }
 
-  /// 业务网页只在原生认证后创建；运行中失效通知始终撤销令牌并回到原生登录。
+  /// 原生认证后先收起登录键盘再交接网页；会话失效始终撤销令牌并回到原生登录。
   private func openWeb(
     _ instance: SavedInstance, authentication: AuthenticationResult
   ) {
+    window?.endEditing(true)
     coordinator?.stop()
     let coordinator = WebCoordinator(
       instance: instance, authentication: authentication,
       onAuthenticationRequired: { [weak self] in
         self?.tokens.remove(instance.id)
         self?.showLogin(instance)
-      })
+      },
+      onConnectionFailed: { [weak self] message in self?.showConnection(message: message) })
     let shell = ShellController(
       coordinator: coordinator,
       onConnection: { [weak self] in self?.showConnection() })
